@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -94,6 +97,58 @@ func putURL(key, url string) error {
 	})
 }
 
+var domainRegex = regexp.MustCompile(`^[a-zA-Z0-9\.-]+$`)
+
+func isValidStrictURL(s string) bool {
+	// Avoid large strings
+	if len(s) > 2048 {
+		return false
+	}
+	// Disallow raw characters, these should already be encoded
+	if strings.ContainsAny(s, "<>\"'`") {
+		return false
+	}
+
+	u, err := url.ParseRequestURI(s)
+	if err != nil || u.Host == "" {
+		return false
+	}
+
+	// Only allow http and https schemes
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return false
+	}
+
+	// Reject URLs with user info (username:password@)
+	if u.User != nil {
+		return false
+	}
+
+	hostname := u.Hostname()
+	if hostname == "localhost" {
+		return true
+	}
+
+	if ip := net.ParseIP(hostname); ip != nil {
+		return true
+	}
+
+	// Make sure hostname is a valid domain name
+	if !domainRegex.MatchString(hostname) {
+		return false
+	}
+	if !strings.Contains(hostname, ".") {
+		return false
+	}
+	parts := strings.Split(hostname, ".")
+	tld := parts[len(parts)-1]
+	if len(tld) < 2 {
+		return false
+	}
+
+	return true
+}
+
 func deleteURL(key string) error {
 	return db.Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(bucketName))
@@ -166,6 +221,11 @@ func handleCreateShortURL(w http.ResponseWriter, r *http.Request) {
 
 	if url == "" {
 		http.Error(w, "URL required", http.StatusBadRequest)
+		return
+	}
+
+	if !isValidStrictURL(url) {
+		http.Error(w, "Invalid URL", http.StatusBadRequest)
 		return
 	}
 
@@ -262,6 +322,11 @@ func handlePutCustomURL(w http.ResponseWriter, r *http.Request, path string) {
 		return
 	}
 
+	if !isValidStrictURL(url) {
+		http.Error(w, "Invalid URL", http.StatusBadRequest)
+		return
+	}
+
 	if err := putURL(path, url); err != nil {
 		http.Error(w, "Failed to store URL", http.StatusInternalServerError)
 		return
@@ -280,62 +345,62 @@ func handleDeleteURL(w http.ResponseWriter, r *http.Request, path string) {
 }
 
 func handlePageView(r *http.Request) {
-    if rybbitSiteID == "" || rybbitSiteKey == "" || rybbitSiteURL == "" {
-        return
-    }
+	if rybbitSiteID == "" || rybbitSiteKey == "" || rybbitSiteURL == "" {
+		return
+	}
 
-    ip := r.Header.Get("X-Forwarded-For")
-    if ip == "" {
-        ip = strings.Split(r.RemoteAddr, ":")[0]
-    } else {
-        ip = strings.TrimSpace(strings.Split(ip, ",")[0])
-    }
+	ip := r.Header.Get("X-Forwarded-For")
+	if ip == "" {
+		ip = strings.Split(r.RemoteAddr, ":")[0]
+	} else {
+		ip = strings.TrimSpace(strings.Split(ip, ",")[0])
+	}
 
-    hostname := r.Host
-    if hostname == "" {
-        if h := r.URL.Hostname(); h != "" {
-            hostname = h
-        }
-    }
+	hostname := r.Host
+	if hostname == "" {
+		if h := r.URL.Hostname(); h != "" {
+			hostname = h
+		}
+	}
 
-    data := map[string]string{
-        "site_id":    rybbitSiteID,
-        "type":       "pageview",
-        "pathname":   r.URL.Path,
-        "hostname":   hostname,
-        "referrer":   r.Referer(),
-        "language":   r.Header.Get("Accept-Language"),
-        "user_agent": r.UserAgent(),
-        "ip_address": ip,
-    }
+	data := map[string]string{
+		"site_id":    rybbitSiteID,
+		"type":       "pageview",
+		"pathname":   r.URL.Path,
+		"hostname":   hostname,
+		"referrer":   r.Referer(),
+		"language":   r.Header.Get("Accept-Language"),
+		"user_agent": r.UserAgent(),
+		"ip_address": ip,
+	}
 
-    jsonData, err := json.Marshal(data)
-    if err != nil {
-        return
-    }
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
 
-    go func(body []byte) {
-        ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-        defer cancel()
+	go func(body []byte) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
 
-        req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(rybbitSiteURL, "/")+"/api/track", bytes.NewReader(body))
-        if err != nil {
-            return
-        }
-        req.Header.Set("Content-Type", "application/json")
-        req.Header.Set("Authorization", "Bearer "+rybbitSiteKey)
+		req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(rybbitSiteURL, "/")+"/api/track", bytes.NewReader(body))
+		if err != nil {
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+rybbitSiteKey)
 
-        resp, err := rybbitClient.Do(req)
-        if err != nil {
-            return
-        }
-        defer resp.Body.Close()
+		resp, err := rybbitClient.Do(req)
+		if err != nil {
+			return
+		}
+		defer resp.Body.Close()
 
-        if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-            b, _ := io.ReadAll(resp.Body)
-            log.Printf("Rybbit tracking error: %s", string(b))
-        }
-    }(jsonData)
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			b, _ := io.ReadAll(resp.Body)
+			log.Printf("Rybbit tracking error: %s", string(b))
+		}
+	}(jsonData)
 }
 
 func main() {

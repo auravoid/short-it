@@ -315,6 +315,36 @@ func TestListURLs(t *testing.T) {
 	}
 }
 
+func TestIsValidStrictURL(t *testing.T) {
+	tests := []struct {
+		url  string
+		want bool
+	}{
+		// Valid cases
+		{"http://google.com", true},
+		{"https://sub.domain.co.uk", true},
+		{"http://localhost", true},
+		{"http://127.0.0.1", true},
+		{"http://[::1]", true},
+
+		// Invalid / Malicious cases
+		{"javascript:alert(1)", false},
+		{"http://foo.com/?q=<script>", false},
+		{"http://user:pass@evil.com", false},
+		{"http://internal", false},
+		{"http://google.c", false},
+		{"ftp://google.com", false},
+		{"http://exa mple.com", false},
+		{"http://ex$ample.com", false},
+	}
+
+	for _, tt := range tests {
+		if got := isValidStrictURL(tt.url); got != tt.want {
+			t.Errorf("isValidStrictURL(%q) = %v, want %v", tt.url, got, tt.want)
+		}
+	}
+}
+
 func BenchmarkGenerateRandomKey(b *testing.B) {
 	testDB := setupTestDB(&testing.T{})
 	defer teardownTestDB(testDB, &testing.T{})
