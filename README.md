@@ -38,6 +38,10 @@ docker-compose up -d
 
 The server listens on `PORT` (default `8080`) and stores the BoltDB file at `DB_PATH` (default `short-it.db`).
 
+Or deploy it in one click:
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/UaONmD?referralCode=Zw7fpP&utm_medium=integration&utm_source=template&utm_campaign=generic)
+
 ## Configuration
 
 Environment variables:
