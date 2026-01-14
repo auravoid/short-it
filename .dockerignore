@@ -1,0 +1,25 @@
+# Git
+.git
+.gitignore
+
+# CI/CD
+.github
+
+# Documentation
+README.md
+
+# Data files
+*.db
+data/
+
+# Docker files
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Environment files (contains secrets)
+.env
+
+# OS generated files
+.DS_Store
+Thumbs.db
