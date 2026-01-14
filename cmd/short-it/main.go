@@ -1,20 +1,29 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"go.etcd.io/bbolt"
 )
 
 var db *bbolt.DB
 var authToken string
+
+var rybbitSiteID = os.Getenv("RYBBIT_SITE_ID")
+var rybbitSiteKey = os.Getenv("RYBBIT_SITE_KEY")
+var rybbitSiteURL = os.Getenv("RYBBIT_SITE_URL")
+var rybbitClient = &http.Client{Timeout: 3 * time.Second}
 
 const bucketName = "urls"
 const maxPageSize = 100
@@ -216,6 +225,7 @@ func handleGetURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	handlePageView(r)
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
@@ -267,6 +277,65 @@ func handleDeleteURL(w http.ResponseWriter, r *http.Request, path string) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func handlePageView(r *http.Request) {
+    if rybbitSiteID == "" || rybbitSiteKey == "" || rybbitSiteURL == "" {
+        return
+    }
+
+    ip := r.Header.Get("X-Forwarded-For")
+    if ip == "" {
+        ip = strings.Split(r.RemoteAddr, ":")[0]
+    } else {
+        ip = strings.TrimSpace(strings.Split(ip, ",")[0])
+    }
+
+    hostname := r.Host
+    if hostname == "" {
+        if h := r.URL.Hostname(); h != "" {
+            hostname = h
+        }
+    }
+
+    data := map[string]string{
+        "site_id":    rybbitSiteID,
+        "type":       "pageview",
+        "pathname":   r.URL.Path,
+        "hostname":   hostname,
+        "referrer":   r.Referer(),
+        "language":   r.Header.Get("Accept-Language"),
+        "user_agent": r.UserAgent(),
+        "ip_address": ip,
+    }
+
+    jsonData, err := json.Marshal(data)
+    if err != nil {
+        return
+    }
+
+    go func(body []byte) {
+        ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+        defer cancel()
+
+        req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(rybbitSiteURL, "/")+"/api/track", bytes.NewReader(body))
+        if err != nil {
+            return
+        }
+        req.Header.Set("Content-Type", "application/json")
+        req.Header.Set("Authorization", "Bearer "+rybbitSiteKey)
+
+        resp, err := rybbitClient.Do(req)
+        if err != nil {
+            return
+        }
+        defer resp.Body.Close()
+
+        if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+            b, _ := io.ReadAll(resp.Body)
+            log.Printf("Rybbit tracking error: %s", string(b))
+        }
+    }(jsonData)
 }
 
 func main() {
