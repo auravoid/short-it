@@ -54,28 +54,28 @@ Environment variables:
 All endpoints that modify or list data require the `Authorization` header to equal the `APP_TOKEN` value.
 
 - Create a short URL
-	- `POST /`
-	- Headers: `Authorization`, `URL` (or JSON body `{ "url": "..." }`)
-	- Response: `{"key":"<generated-key>"}`
+  - `POST /`
+  - Headers: `Authorization`, `URL` (or JSON body `{ "url": "..." }`)
+  - Response: `{"key":"<generated-key>"}`
 
 - List URLs (paginated)
-	- `GET /`
-	- Headers: `Authorization`, optional `Cursor`, optional `Limit` (max 100)
-	- Response: `{ "items": [{"key":"...","value":"..."}], "next":"<cursor>" }`
+  - `GET /`
+  - Headers: `Authorization`, optional `Cursor`, optional `Limit` (max 100)
+  - Response: `{ "items": [{"key":"...","value":"..."}], "next":"<cursor>" }`
 
 - Redirect
-	- `GET /{key}`
-	- Redirects (302) to the stored URL if found
+  - `GET /{key}`
+  - Redirects (302) to the stored URL if found
 
 - Create/Update custom path
-	- `PUT /{path}`
-	- Headers: `Authorization`, `URL` (or JSON body)
-	- Response: `201 Created`
+  - `PUT /{path}`
+  - Headers: `Authorization`, `URL` (or JSON body)
+  - Response: `201 Created`
 
 - Delete path
-	- `DELETE /{path}`
-	- Headers: `Authorization`
-	- Response: `204 No Content`
+  - `DELETE /{path}`
+  - Headers: `Authorization`
+  - Response: `204 No Content`
 
 Examples:
 
