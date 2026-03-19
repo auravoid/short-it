@@ -49,9 +49,17 @@ Environment variables:
 - `APP_TOKEN` (required): token used for authorization on protected endpoints
 - `PORT` (optional): HTTP port (default `8080`)
 - `DB_PATH` (optional): path to BoltDB file (default `short-it.db`)
+- `WEB_UI` (optional): set to `true` to host a small link-creation webpage
+- `WEB_UI_PORT` (optional): port for the web UI server (default `8080`)
 - `RYBBIT_SITE_ID` (optional): Site ID provided by Rybbit
 - `RYBBIT_SITE_KEY` (optional): API key found in account settings for Rybbit
 - `RYBBIT_SITE_URL` (optional): Base URL for your Rybbit instance
+
+Notes for `WEB_UI`:
+
+- The API server still listens on `PORT`.
+- The web UI starts only when `WEB_UI=true`.
+- If `WEB_UI_PORT` is the same value as `PORT`, the UI is skipped to avoid interfering with the API process.
 
 ## HTTP API
 

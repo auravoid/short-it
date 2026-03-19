@@ -23,13 +23,72 @@ import (
 var db *bbolt.DB
 var authToken string
 
-var rybbitSiteID = os.Getenv("RYBBIT_SITE_ID")
-var rybbitSiteKey = os.Getenv("RYBBIT_SITE_KEY")
-var rybbitSiteURL = os.Getenv("RYBBIT_SITE_URL")
+var rybbitSiteID = os.Getenv(envRybbitSiteID)
+var rybbitSiteKey = os.Getenv(envRybbitSiteKey)
+var rybbitSiteURL = os.Getenv(envRybbitSiteURL)
 var rybbitClient = &http.Client{Timeout: 3 * time.Second}
 
 const bucketName = "urls"
 const maxPageSize = 100
+
+const envAppToken = "APP_TOKEN"
+const envDBPath = "DB_PATH"
+const envPort = "PORT"
+const envWebUI = "WEB_UI"
+const envWebUIPort = "WEB_UI_PORT"
+
+const envRybbitSiteID = "RYBBIT_SITE_ID"
+const envRybbitSiteKey = "RYBBIT_SITE_KEY"
+const envRybbitSiteURL = "RYBBIT_SITE_URL"
+
+const defaultAPIPort = "8080"
+const defaultWebUIPort = "8080"
+const defaultDBPath = "short-it.db"
+
+const webUIPage = `<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>short-it UI</title>
+	<style>
+		body { font-family: sans-serif; max-width: 680px; margin: 2rem auto; padding: 0 1rem; }
+		label { display: block; margin-top: 1rem; font-weight: 600; }
+		input { width: 100%; padding: .6rem; margin-top: .35rem; box-sizing: border-box; }
+		button { margin-top: 1rem; padding: .65rem 1rem; cursor: pointer; }
+		pre { margin-top: 1rem; padding: .7rem; background: #f5f5f5; overflow-x: auto; }
+	</style>
+</head>
+<body>
+	<h1>Create short link</h1>
+	<form id="create-form">
+		<label>Token <input id="token" type="password" required></label>
+		<label>URL <input id="url" type="url" placeholder="https://example.com" required></label>
+		<label>Custom path (optional) <input id="custom_path" type="text" placeholder="my-link"></label>
+		<button type="submit">Create</button>
+	</form>
+	<pre id="result"></pre>
+	<script>
+		const form = document.getElementById('create-form');
+		const result = document.getElementById('result');
+		form.addEventListener('submit', async (event) => {
+			event.preventDefault();
+			const payload = {
+				token: document.getElementById('token').value,
+				url: document.getElementById('url').value,
+				custom_path: document.getElementById('custom_path').value
+			};
+			const response = await fetch('/api/create', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(payload)
+			});
+			const data = await response.json().catch(() => ({ error: 'unexpected response' }));
+			result.textContent = JSON.stringify(data, null, 2);
+		});
+	</script>
+</body>
+</html>`
 
 type KVPair struct {
 	Key   string `json:"key"`
@@ -41,11 +100,58 @@ type PaginatedResponse struct {
 	Next  string   `json:"next,omitempty"`
 }
 
+type WebUICreateRequest struct {
+	Token      string `json:"token"`
+	URL        string `json:"url"`
+	CustomPath string `json:"custom_path"`
+}
+
+func parseBoolEnv(v string) bool {
+	return strings.EqualFold(strings.TrimSpace(v), "true")
+}
+
+func envOrDefault(key, fallback string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	return v
+}
+
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(body); err != nil {
+		log.Printf("[http] failed to encode response: %v", err)
+	}
+}
+
+func writeJSONError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"error": message})
+}
+
+func readURLFromHeaderOrBody(r *http.Request) (string, error) {
+	targetURL := strings.TrimSpace(r.Header.Get("URL"))
+	if targetURL != "" {
+		return targetURL, nil
+	}
+
+	var body map[string]string
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(body["url"]), nil
+}
+
 func generateRandomKey() string {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	for {
 		bytes := make([]byte, 6)
-		rand.Read(bytes)
+		if _, err := rand.Read(bytes); err != nil {
+			log.Printf("[keys] crypto/rand failed, retrying: %v", err)
+			continue
+		}
 		for i, b := range bytes {
 			bytes[i] = charset[b%byte(len(charset))]
 		}
@@ -98,6 +204,7 @@ func putURL(key, url string) error {
 }
 
 var domainRegex = regexp.MustCompile(`^[a-zA-Z0-9\.-]+$`)
+var customPathRegex = regexp.MustCompile(`^[a-zA-Z0-9._~-]{1,128}$`)
 
 func isValidStrictURL(s string) bool {
 	// Avoid large strings
@@ -197,47 +304,31 @@ func listURLs(cursor string, limit int) ([]KVPair, string, error) {
 	return items, nextCursor, err
 }
 
-func handleRoot(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodPost:
-		handleCreateShortURL(w, r)
-	case http.MethodGet:
-		handleListURLs(w, r)
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
 func handleCreateShortURL(w http.ResponseWriter, r *http.Request) {
-	url := r.Header.Get("URL")
-	if url == "" {
-		var body map[string]string
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, "Invalid JSON or missing URL", http.StatusBadRequest)
-			return
-		}
-		url = body["url"]
+	targetURL, err := readURLFromHeaderOrBody(r)
+	if err != nil {
+		http.Error(w, "Invalid JSON or missing URL", http.StatusBadRequest)
+		return
 	}
 
-	if url == "" {
+	if targetURL == "" {
 		http.Error(w, "URL required", http.StatusBadRequest)
 		return
 	}
 
-	if !isValidStrictURL(url) {
+	if !isValidStrictURL(targetURL) {
 		http.Error(w, "Invalid URL", http.StatusBadRequest)
 		return
 	}
 
 	key := generateRandomKey()
 
-	if err := putURL(key, url); err != nil {
+	if err := putURL(key, targetURL); err != nil {
 		http.Error(w, "Failed to store URL", http.StatusInternalServerError)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"key": key})
+	writeJSON(w, http.StatusOK, map[string]string{"key": key})
 }
 
 func handleListURLs(w http.ResponseWriter, r *http.Request) {
@@ -263,8 +354,7 @@ func handleListURLs(w http.ResponseWriter, r *http.Request) {
 		response.Next = nextCursor
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	writeJSON(w, http.StatusOK, response)
 }
 
 func handleGetURL(w http.ResponseWriter, r *http.Request) {
@@ -289,45 +379,24 @@ func handleGetURL(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
-func handleCustomURL(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/")
-	if path == "" {
-		http.Error(w, "Path required", http.StatusBadRequest)
+func handlePutCustomURL(w http.ResponseWriter, r *http.Request, path string) {
+	targetURL, err := readURLFromHeaderOrBody(r)
+	if err != nil {
+		http.Error(w, "Invalid JSON or missing URL", http.StatusBadRequest)
 		return
 	}
 
-	switch r.Method {
-	case http.MethodPut:
-		handlePutCustomURL(w, r, path)
-	case http.MethodDelete:
-		handleDeleteURL(w, r, path)
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-func handlePutCustomURL(w http.ResponseWriter, r *http.Request, path string) {
-	url := r.Header.Get("URL")
-	if url == "" {
-		var body map[string]string
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, "Invalid JSON or missing URL", http.StatusBadRequest)
-			return
-		}
-		url = body["url"]
-	}
-
-	if url == "" {
+	if targetURL == "" {
 		http.Error(w, "URL required", http.StatusBadRequest)
 		return
 	}
 
-	if !isValidStrictURL(url) {
+	if !isValidStrictURL(targetURL) {
 		http.Error(w, "Invalid URL", http.StatusBadRequest)
 		return
 	}
 
-	if err := putURL(path, url); err != nil {
+	if err := putURL(path, targetURL); err != nil {
 		http.Error(w, "Failed to store URL", http.StatusInternalServerError)
 		return
 	}
@@ -376,6 +445,7 @@ func handlePageView(r *http.Request) {
 
 	jsonData, err := json.Marshal(data)
 	if err != nil {
+		log.Printf("[rybbit] failed to marshal tracking payload: %v", err)
 		return
 	}
 
@@ -385,6 +455,7 @@ func handlePageView(r *http.Request) {
 
 		req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(rybbitSiteURL, "/")+"/api/track", bytes.NewReader(body))
 		if err != nil {
+			log.Printf("[rybbit] failed to create request: %v", err)
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
@@ -392,31 +463,100 @@ func handlePageView(r *http.Request) {
 
 		resp, err := rybbitClient.Do(req)
 		if err != nil {
+			log.Printf("[rybbit] request failed: %v", err)
 			return
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			b, _ := io.ReadAll(resp.Body)
-			log.Printf("Rybbit tracking error: %s", string(b))
+			log.Printf("[rybbit] tracking error status=%d body=%s", resp.StatusCode, string(b))
 		}
 	}(jsonData)
 }
 
+func isValidCustomPath(path string) bool {
+	return customPathRegex.MatchString(path)
+}
+
+func handleWebUIPage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(webUIPage))
+}
+
+func handleWebUICreate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req WebUICreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Invalid JSON body")
+		return
+	}
+
+	req.Token = strings.TrimSpace(req.Token)
+	req.URL = strings.TrimSpace(req.URL)
+	req.CustomPath = strings.Trim(strings.TrimSpace(req.CustomPath), "/")
+
+	if req.Token != authToken {
+		writeJSONError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	if !isValidStrictURL(req.URL) {
+		writeJSONError(w, http.StatusBadRequest, "Invalid URL")
+		return
+	}
+
+	key := req.CustomPath
+	if key == "" {
+		key = generateRandomKey()
+	} else if !isValidCustomPath(key) {
+		writeJSONError(w, http.StatusBadRequest, "Invalid custom path")
+		return
+	}
+
+	if err := putURL(key, req.URL); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Failed to store URL")
+		return
+	}
+
+	host := r.Host
+	if h, _, err := net.SplitHostPort(r.Host); err == nil {
+		host = h
+	}
+	if host == "" {
+		host = "localhost"
+	}
+
+	apiPort := envOrDefault(envPort, defaultAPIPort)
+
+	shortURL := fmt.Sprintf("http://%s:%s/%s", host, apiPort, key)
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"key":       key,
+		"short_url": shortURL,
+	})
+}
+
 func main() {
-	authToken = os.Getenv("APP_TOKEN")
+	authToken = os.Getenv(envAppToken)
 	if authToken == "" {
-		log.Fatal("APP_TOKEN environment variable must be set")
+		log.Fatalf("%s environment variable must be set", envAppToken)
 	}
 
 	var err error
-	dbPath := os.Getenv("DB_PATH")
-	if dbPath == "" {
-		dbPath = "short-it.db"
-	}
+	dbPath := envOrDefault(envDBPath, defaultDBPath)
 	db, err = bbolt.Open(dbPath, 0600, nil)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("[startup] failed opening db at %s: %v", dbPath, err)
 	}
 	defer db.Close()
 
@@ -425,18 +565,35 @@ func main() {
 		return err
 	})
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("[startup] failed creating bucket %q: %v", bucketName, err)
 	}
 
-	http.HandleFunc("/", handleRequest)
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("/", handleRequest)
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	port := envOrDefault(envPort, defaultAPIPort)
+
+	if parseBoolEnv(os.Getenv(envWebUI)) {
+		webUIPort := envOrDefault(envWebUIPort, defaultWebUIPort)
+
+		if webUIPort == port {
+			log.Printf("[web-ui] enabled but %s (%s) matches %s (%s); skipping to avoid interfering with API", envWebUIPort, webUIPort, envPort, port)
+		} else {
+			webUIMux := http.NewServeMux()
+			webUIMux.HandleFunc("/", handleWebUIPage)
+			webUIMux.HandleFunc("/api/create", handleWebUICreate)
+
+			go func() {
+				log.Printf("[web-ui] listening on :%s", webUIPort)
+				if err := http.ListenAndServe(":"+webUIPort, webUIMux); err != nil {
+					log.Printf("[web-ui] server stopped: %v", err)
+				}
+			}()
+		}
 	}
 
-	fmt.Printf("Server starting on port %s\n", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	log.Printf("[api] listening on :%s", port)
+	log.Fatal(http.ListenAndServe(":"+port, apiMux))
 }
 
 func handleRequest(w http.ResponseWriter, r *http.Request) {

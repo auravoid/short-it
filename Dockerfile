@@ -1,4 +1,4 @@
-FROM golang:1.24-alpine AS builder
+FROM golang:alpine AS builder
 
 WORKDIR /app
 
@@ -17,6 +17,8 @@ COPY --from=builder /app/short-it .
 RUN mkdir -p /data
 
 EXPOSE 8080
+EXPOSE 8090
+
 ENV DB_PATH=/data/short-it.db
 
 CMD ["./short-it"] 

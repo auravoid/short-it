@@ -315,6 +315,45 @@ func TestListURLs(t *testing.T) {
 	}
 }
 
+func TestParseBoolEnv(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{name: "exact true", input: "true", want: true},
+		{name: "uppercase true", input: "TRUE", want: true},
+		{name: "trimmed true", input: " true ", want: true},
+		{name: "false", input: "false", want: false},
+		{name: "empty", input: "", want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseBoolEnv(tc.input)
+			if got != tc.want {
+				t.Fatalf("parseBoolEnv(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsValidCustomPath(t *testing.T) {
+	valid := []string{"abc", "A1-b", "my_link", "path.name", "tilde~ok"}
+	for _, v := range valid {
+		if !isValidCustomPath(v) {
+			t.Fatalf("expected custom path to be valid: %s", v)
+		}
+	}
+
+	invalid := []string{"", "bad/path", " space", "with space", "bad*char"}
+	for _, v := range invalid {
+		if isValidCustomPath(v) {
+			t.Fatalf("expected custom path to be invalid: %s", v)
+		}
+	}
+}
+
 func TestIsValidStrictURL(t *testing.T) {
 	tests := []struct {
 		url  string

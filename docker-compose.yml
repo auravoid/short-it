@@ -2,13 +2,19 @@ version: '3.8'
 
 services:
   short-it:
-    image: ghcr.io/auravoid/short-it:latest
+    # image: ghcr.io/auravoid/short-it:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "8080:8080"
+      - "8090:8090"
     environment:
       #- RYBBIT_SITE_ID=YOUR_SITE_ID_HERE
       #- RYBBIT_SITE_KEY=YOUR_API_KEY_HERE
       #- RYBBIT_SITE_URL=https://your-rybbit-instance.example.com
+      - WEB_UI=false
+      - WEB_UI_PORT=8090
       - APP_TOKEN=YOUR_TOKEN_HERE
       - PORT=8080
       - DB_PATH=/data/short-it.db
