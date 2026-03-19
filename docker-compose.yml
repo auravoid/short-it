@@ -2,10 +2,10 @@ version: '3.8'
 
 services:
   short-it:
-    # image: ghcr.io/auravoid/short-it:latest
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/auravoid/short-it:latest
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
     ports:
       - "8080:8080"
       - "8090:8090"
