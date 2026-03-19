@@ -33,8 +33,10 @@ const maxPageSize = 100
 
 const envAppToken = "APP_TOKEN"
 const envDBPath = "DB_PATH"
-const envPort = "PORT"
+const envPort = "API_PORT"
+const envAPIBaseURL = "API_URL"
 const envWebUI = "WEB_UI"
+const envWebUIPath = "WEB_UI_URL"
 const envWebUIPort = "WEB_UI_PORT"
 
 const envRybbitSiteID = "RYBBIT_SITE_ID"
@@ -42,7 +44,7 @@ const envRybbitSiteKey = "RYBBIT_SITE_KEY"
 const envRybbitSiteURL = "RYBBIT_SITE_URL"
 
 const defaultAPIPort = "8080"
-const defaultWebUIPort = "8080"
+const defaultWebUIPort = "8090"
 const defaultDBPath = "short-it.db"
 
 const webUIPage = `<!doctype html>
@@ -116,6 +118,34 @@ func envOrDefault(key, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+func normalizeBaseURL(raw string) string {
+	return strings.TrimRight(strings.TrimSpace(raw), "/")
+}
+
+func resolveAPIBaseURL(r *http.Request) string {
+	if base := normalizeBaseURL(os.Getenv(envAPIBaseURL)); base != "" {
+		return base
+	}
+
+	host := r.Host
+	if h, _, err := net.SplitHostPort(r.Host); err == nil {
+		host = h
+	}
+	if host == "" {
+		host = "localhost"
+	}
+
+	return fmt.Sprintf("http://%s:%s", host, envOrDefault(envPort, defaultAPIPort))
+}
+
+func resolveWebUIBaseURL(webUIPort string) string {
+	if base := normalizeBaseURL(os.Getenv(envWebUIPath)); base != "" {
+		return base
+	}
+
+	return fmt.Sprintf("http://localhost:%s", webUIPort)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -528,17 +558,7 @@ func handleWebUICreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	host := r.Host
-	if h, _, err := net.SplitHostPort(r.Host); err == nil {
-		host = h
-	}
-	if host == "" {
-		host = "localhost"
-	}
-
-	apiPort := envOrDefault(envPort, defaultAPIPort)
-
-	shortURL := fmt.Sprintf("http://%s:%s/%s", host, apiPort, key)
+	shortURL := fmt.Sprintf("%s/%s", resolveAPIBaseURL(r), key)
 
 	writeJSON(w, http.StatusOK, map[string]string{
 		"key":       key,
@@ -584,7 +604,7 @@ func main() {
 			webUIMux.HandleFunc("/api/create", handleWebUICreate)
 
 			go func() {
-				log.Printf("[web-ui] listening on :%s", webUIPort)
+				log.Printf("[web-ui] listening on :%s (public %s)", webUIPort, resolveWebUIBaseURL(webUIPort))
 				if err := http.ListenAndServe(":"+webUIPort, webUIMux); err != nil {
 					log.Printf("[web-ui] server stopped: %v", err)
 				}
@@ -592,7 +612,11 @@ func main() {
 		}
 	}
 
-	log.Printf("[api] listening on :%s", port)
+	apiBase := normalizeBaseURL(os.Getenv(envAPIBaseURL))
+	if apiBase == "" {
+		apiBase = fmt.Sprintf("http://localhost:%s", port)
+	}
+	log.Printf("[api] listening on :%s (public %s)", port, apiBase)
 	log.Fatal(http.ListenAndServe(":"+port, apiMux))
 }
 

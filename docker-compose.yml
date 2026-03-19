@@ -13,10 +13,12 @@ services:
       #- RYBBIT_SITE_ID=YOUR_SITE_ID_HERE
       #- RYBBIT_SITE_KEY=YOUR_API_KEY_HERE
       #- RYBBIT_SITE_URL=https://your-rybbit-instance.example.com
-      - WEB_UI=false
+      - WEB_UI=true
       - WEB_UI_PORT=8090
+      - WEB_UI_URL=http://localhost:8090
       - APP_TOKEN=YOUR_TOKEN_HERE
-      - PORT=8080
+      - API_PORT=8080
+      - API_URL=http://localhost:8080
       - DB_PATH=/data/short-it.db
     volumes:
       - short-it-data:/data

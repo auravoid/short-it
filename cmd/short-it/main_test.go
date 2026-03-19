@@ -267,6 +267,82 @@ func TestDeleteURL(t *testing.T) {
 	}
 }
 
+func TestHandleWebUICreateUsesAPIURL(t *testing.T) {
+	testDB := setupTestDB(t)
+	defer teardownTestDB(testDB, t)
+
+	originalDB := db
+	originalToken := authToken
+	db = testDB
+	authToken = "test-token"
+	defer func() {
+		db = originalDB
+		authToken = originalToken
+	}()
+
+	t.Setenv(envAPIBaseURL, "https://short.example.com")
+	t.Setenv(envPort, "8080")
+
+	body := `{"token":"test-token","url":"https://example.com","custom_path":"blog"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/create", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Host = "web-link.example.com:8090"
+	w := httptest.NewRecorder()
+
+	handleWebUICreate(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", w.Code)
+	}
+
+	var response map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if got, want := response["short_url"], "https://short.example.com/blog"; got != want {
+		t.Fatalf("Expected short_url %q, got %q", want, got)
+	}
+}
+
+func TestHandleWebUICreateFallsBackToHostAndAPIPort(t *testing.T) {
+	testDB := setupTestDB(t)
+	defer teardownTestDB(testDB, t)
+
+	originalDB := db
+	originalToken := authToken
+	db = testDB
+	authToken = "test-token"
+	defer func() {
+		db = originalDB
+		authToken = originalToken
+	}()
+
+	t.Setenv(envAPIBaseURL, "")
+	t.Setenv(envPort, "8080")
+
+	body := `{"token":"test-token","url":"https://example.com","custom_path":"blog"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/create", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Host = "web-link.example.com:8090"
+	w := httptest.NewRecorder()
+
+	handleWebUICreate(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", w.Code)
+	}
+
+	var response map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if got, want := response["short_url"], "http://web-link.example.com:8080/blog"; got != want {
+		t.Fatalf("Expected short_url %q, got %q", want, got)
+	}
+}
+
 func TestListURLs(t *testing.T) {
 	testDB := setupTestDB(t)
 	defer teardownTestDB(testDB, t)

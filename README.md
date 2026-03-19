@@ -19,7 +19,7 @@ Run locally:
 
 ```bash
 go build -o short-it ./cmd/short-it
-APP_TOKEN=your-secret-token DB_PATH=short-it.db PORT=8080 ./short-it
+APP_TOKEN=your-secret-token DB_PATH=short-it.db API_PORT=8080 ./short-it
 ```
 
 Run with Docker:
@@ -36,7 +36,7 @@ docker-compose up -d
 # edit docker-compose.yml to set APP_TOKEN or update the environment
 ```
 
-The server listens on `PORT` (default `8080`) and stores the BoltDB file at `DB_PATH` (default `short-it.db`).
+The server listens on `API_PORT` (default `8080`) and stores the BoltDB file at `DB_PATH` (default `short-it.db`).
 
 Or deploy it in one click:
 
@@ -47,9 +47,11 @@ Or deploy it in one click:
 Environment variables:
 
 - `APP_TOKEN` (required): token used for authorization on protected endpoints
-- `PORT` (optional): HTTP port (default `8080`)
+- `API_PORT` (optional): HTTP port (default `8080`)
+- `API_URL` (optional): URL to access the API (default `http://localhost:8080`)
 - `DB_PATH` (optional): path to BoltDB file (default `short-it.db`)
 - `WEB_UI` (optional): set to `true` to host a small link-creation webpage
+- `WEB_UI_URL` (optional): URL to access the web UI (default `http://localhost:8090`)
 - `WEB_UI_PORT` (optional): port for the web UI server (default `8080`)
 - `RYBBIT_SITE_ID` (optional): Site ID provided by Rybbit
 - `RYBBIT_SITE_KEY` (optional): API key found in account settings for Rybbit
@@ -57,9 +59,9 @@ Environment variables:
 
 Notes for `WEB_UI`:
 
-- The API server still listens on `PORT`.
+- The API server still listens on `API_PORT`.
 - The web UI starts only when `WEB_UI=true`.
-- If `WEB_UI_PORT` is the same value as `PORT`, the UI is skipped to avoid interfering with the API process.
+- If `WEB_UI_PORT` is the same value as `API_PORT`, the UI is skipped to avoid interfering with the API process.
 
 ## HTTP API
 
