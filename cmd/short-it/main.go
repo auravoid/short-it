@@ -401,7 +401,7 @@ func handleListURLs(w http.ResponseWriter, r *http.Request) {
 	cursor := r.Header.Get("Cursor")
 	limitStr := r.Header.Get("Limit")
 	limit := maxPageSize
-	
+
 	if limitStr != "" {
 		if l, err := strconv.Atoi(limitStr); err == nil {
 			if l == 0 {
@@ -481,6 +481,11 @@ func handlePutCustomURL(w http.ResponseWriter, r *http.Request, path string) {
 }
 
 func handleDeleteURL(w http.ResponseWriter, r *http.Request, path string) {
+	if _, err := getURL(path); err != nil {
+		writeJSONError(w, http.StatusNotFound, fmt.Sprintf("Not Found: The short link key '%s' does not exist.", path))
+		return
+	}
+
 	if err := deleteURL(path); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("Internal Server Error: Failed to delete URL '%s' from the database (%v).", path, err))
 		return
@@ -687,7 +692,7 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 
 			url, err := getURL(rootRedirectKey)
 			if err == nil {
-				r.URL.Path = "/" 
+				r.URL.Path = "/"
 				handlePageView(r)
 				http.Redirect(w, r, url, http.StatusFound)
 				return

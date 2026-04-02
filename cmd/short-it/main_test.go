@@ -301,6 +301,14 @@ func TestDeleteURL(t *testing.T) {
 	if err == nil {
 		t.Error("URL should not exist after deletion")
 	}
+
+	// Test DELETE non-existent key
+	req2 := httptest.NewRequest("DELETE", "/nonexistent", nil)
+	w2 := httptest.NewRecorder()
+	handleDeleteURL(w2, req2, "nonexistent")
+	if w2.Code != http.StatusNotFound {
+		t.Errorf("Expected 404 for deleting non-existent key, got %d", w2.Code)
+	}
 }
 
 func TestHandleWebUICreateUsesAPIURL(t *testing.T) {
