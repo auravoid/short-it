@@ -40,6 +40,7 @@ var rybbitClient = &http.Client{Timeout: 3 * time.Second}
 
 const bucketName = "urls"
 const maxPageSize = 100
+const rootRedirectKey = "_root"
 
 const envAppToken = "APP_TOKEN"
 const envDBPath = "DB_PATH"
@@ -679,9 +680,30 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		case http.MethodPost:
 			authMiddleware(handleCreateShortURL)(w, r)
 		case http.MethodGet:
-			authMiddleware(handleListURLs)(w, r)
+			if r.Header.Get("Authorization") == cfg.AppToken {
+				handleListURLs(w, r)
+				return
+			}
+
+			url, err := getURL(rootRedirectKey)
+			if err == nil {
+				r.URL.Path = "/" 
+				handlePageView(r)
+				http.Redirect(w, r, url, http.StatusFound)
+				return
+			}
+
+			writeJSONError(w, http.StatusUnauthorized, "Unauthorized: Invalid or missing Authorization header token.")
+		case http.MethodPut:
+			authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+				handlePutCustomURL(w, r, rootRedirectKey)
+			})(w, r)
+		case http.MethodDelete:
+			authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+				handleDeleteURL(w, r, rootRedirectKey)
+			})(w, r)
 		default:
-			writeJSONError(w, http.StatusMethodNotAllowed, fmt.Sprintf("Method not allowed: Unsupported HTTP method '%s' on root endpoint. Use POST to create or GET to list.", r.Method))
+			writeJSONError(w, http.StatusMethodNotAllowed, fmt.Sprintf("Method not allowed: Unsupported HTTP method '%s' on root endpoint. Use POST to create, GET to list/redirect, PUT to set root redirect, or DELETE to remove it.", r.Method))
 		}
 		return
 	}

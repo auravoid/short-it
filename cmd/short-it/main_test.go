@@ -541,3 +541,62 @@ func BenchmarkGetURL(b *testing.B) {
 		getURL(testKey)
 	}
 }
+
+func TestRootRedirectLogic(t *testing.T) {
+	testDB := setupTestDB(t)
+	defer teardownTestDB(testDB, t)
+
+	originalDB := db
+	originalConfig := cfg
+	db = testDB
+	defer func() {
+		db = originalDB
+		cfg = originalConfig
+	}()
+
+	cfg.AppToken = "test-token"
+	testTarget := "https://portfolio.example.com"
+
+	// 1. Test setting the root redirect via PUT /
+	reqPut := httptest.NewRequest("PUT", "/", nil)
+	reqPut.Header.Set("Authorization", "test-token")
+	reqPut.Header.Set("URL", testTarget)
+	wPut := httptest.NewRecorder()
+	handleRequest(wPut, reqPut)
+
+	if wPut.Code != http.StatusCreated {
+		t.Fatalf("Expected 201 Created for setting root redirect, got %d", wPut.Code)
+	}
+
+	// 2. Test public access (GET / without auth) -> Should Redirect
+	reqPublicGet := httptest.NewRequest("GET", "/", nil)
+	wPublicGet := httptest.NewRecorder()
+	handleRequest(wPublicGet, reqPublicGet)
+
+	if wPublicGet.Code != http.StatusFound {
+		t.Fatalf("Expected 302 Found for public root request, got %d", wPublicGet.Code)
+	}
+	if loc := wPublicGet.Header().Get("Location"); loc != testTarget {
+		t.Errorf("Expected redirect to %s, got %s", testTarget, loc)
+	}
+
+	// 3. Test API access (GET / with auth) -> Should Return JSON List
+	reqApiGet := httptest.NewRequest("GET", "/", nil)
+	reqApiGet.Header.Set("Authorization", "test-token")
+	wApiGet := httptest.NewRecorder()
+	handleRequest(wApiGet, reqApiGet)
+
+	if wApiGet.Code != http.StatusOK {
+		t.Fatalf("Expected 200 OK for API list request, got %d", wApiGet.Code)
+	}
+	
+	// 4. Test deleting the root redirect
+	reqDel := httptest.NewRequest("DELETE", "/", nil)
+	reqDel.Header.Set("Authorization", "test-token")
+	wDel := httptest.NewRecorder()
+	handleRequest(wDel, reqDel)
+
+	if wDel.Code != http.StatusNoContent {
+		t.Fatalf("Expected 204 No Content for deleting root redirect, got %d", wDel.Code)
+	}
+}
