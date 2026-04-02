@@ -11,10 +11,10 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-func setupTestDB(t *testing.T) *bbolt.DB {
-	db, err := bbolt.Open("test_"+t.Name()+".db", 0600, nil)
+func setupTestDB(tb testing.TB) *bbolt.DB {
+	db, err := bbolt.Open("test_"+tb.Name()+".db", 0600, nil)
 	if err != nil {
-		t.Fatalf("Failed to open test database: %v", err)
+		tb.Fatalf("Failed to open test database: %v", err)
 	}
 
 	err = db.Update(func(tx *bbolt.Tx) error {
@@ -22,15 +22,15 @@ func setupTestDB(t *testing.T) *bbolt.DB {
 		return err
 	})
 	if err != nil {
-		t.Fatalf("Failed to create bucket: %v", err)
+		tb.Fatalf("Failed to create bucket: %v", err)
 	}
 
 	return db
 }
 
-func teardownTestDB(db *bbolt.DB, t *testing.T) {
+func teardownTestDB(db *bbolt.DB, tb testing.TB) {
 	db.Close()
-	os.Remove("test_" + t.Name() + ".db")
+	os.Remove("test_" + tb.Name() + ".db")
 }
 
 func TestGenerateRandomKey(t *testing.T) {
@@ -104,9 +104,9 @@ func TestDatabaseOperations(t *testing.T) {
 }
 
 func TestAuthMiddleware(t *testing.T) {
-	originalToken := authToken
-	authToken = "test-token"
-	defer func() { authToken = originalToken }()
+	originalConfig := cfg
+	cfg.AppToken = "test-token"
+	defer func() { cfg = originalConfig }()
 
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -137,8 +137,13 @@ func TestCreateShortURL(t *testing.T) {
 	defer teardownTestDB(testDB, t)
 
 	originalDB := db
+	originalConfig := cfg
 	db = testDB
-	defer func() { db = originalDB }()
+	cfg.AllowUnsafeURLs = false 
+	defer func() {
+		db = originalDB
+		cfg = originalConfig
+	}()
 
 	// Test with URL in header
 	req := httptest.NewRequest("POST", "/", nil)
@@ -164,6 +169,37 @@ func TestCreateShortURL(t *testing.T) {
 	handleCreateShortURL(w2, req2)
 	if w2.Code != http.StatusBadRequest {
 		t.Errorf("Expected 400, got %d", w2.Code)
+	}
+}
+
+func TestAllowUnsafeURLs(t *testing.T) {
+	testDB := setupTestDB(t)
+	defer teardownTestDB(testDB, t)
+
+	originalDB := db
+	originalConfig := cfg
+	db = testDB
+	defer func() {
+		db = originalDB
+		cfg = originalConfig
+	}()
+
+	cfg.AllowUnsafeURLs = false
+	req1 := httptest.NewRequest("POST", "/", nil)
+	req1.Header.Set("URL", "/relative-link")
+	w1 := httptest.NewRecorder()
+	handleCreateShortURL(w1, req1)
+	if w1.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for unsafe URL when strict mode is on, got %d", w1.Code)
+	}
+
+	cfg.AllowUnsafeURLs = true
+	req2 := httptest.NewRequest("POST", "/", nil)
+	req2.Header.Set("URL", "/relative-link")
+	w2 := httptest.NewRecorder()
+	handleCreateShortURL(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Errorf("Expected 200 for unsafe URL when explicitly allowed, got %d", w2.Code)
 	}
 }
 
@@ -272,16 +308,16 @@ func TestHandleWebUICreateUsesAPIURL(t *testing.T) {
 	defer teardownTestDB(testDB, t)
 
 	originalDB := db
-	originalToken := authToken
+	originalConfig := cfg
 	db = testDB
-	authToken = "test-token"
 	defer func() {
 		db = originalDB
-		authToken = originalToken
+		cfg = originalConfig
 	}()
 
-	t.Setenv(envAPIBaseURL, "https://short.example.com")
-	t.Setenv(envPort, "8080")
+	cfg.AppToken = "test-token"
+	cfg.APIBaseURL = "https://short.example.com"
+	cfg.APIPort = "8080"
 
 	body := `{"token":"test-token","url":"https://example.com","custom_path":"blog"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/create", strings.NewReader(body))
@@ -310,16 +346,16 @@ func TestHandleWebUICreateFallsBackToHostAndAPIPort(t *testing.T) {
 	defer teardownTestDB(testDB, t)
 
 	originalDB := db
-	originalToken := authToken
+	originalConfig := cfg
 	db = testDB
-	authToken = "test-token"
 	defer func() {
 		db = originalDB
-		authToken = originalToken
+		cfg = originalConfig
 	}()
 
-	t.Setenv(envAPIBaseURL, "")
-	t.Setenv(envPort, "8080")
+	cfg.AppToken = "test-token"
+	cfg.APIBaseURL = ""
+	cfg.APIPort = "8080"
 
 	body := `{"token":"test-token","url":"https://example.com","custom_path":"blog"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/create", strings.NewReader(body))
@@ -364,7 +400,7 @@ func TestListURLs(t *testing.T) {
 		}
 	}
 
-	// Test listing all
+	// Test listing all with default fallback (100)
 	items, nextCursor, err := listURLs("", 100)
 	if err != nil {
 		t.Fatalf("Failed to list URLs: %v", err)
@@ -385,9 +421,20 @@ func TestListURLs(t *testing.T) {
 		t.Errorf("Expected 2 items, got %d", len(items2))
 	}
 	// With 3 total items and limit 2, we should have a next cursor
-	t.Logf("Next cursor: '%s'", nextCursor2)
 	if nextCursor2 == "" {
 		t.Error("Next cursor should not be empty with pagination when more items exist")
+	}
+
+	// Test listing ALL items by specifying Limit 0
+	items3, nextCursor3, err := listURLs("", 0)
+	if err != nil {
+		t.Fatalf("Failed to list URLs with limit 0: %v", err)
+	}
+	if len(items3) != 3 {
+		t.Errorf("Expected 3 items with limit 0, got %d", len(items3))
+	}
+	if nextCursor3 != "" {
+		t.Error("Next cursor should be empty when getting all items using limit 0")
 	}
 }
 
@@ -415,14 +462,16 @@ func TestParseBoolEnv(t *testing.T) {
 }
 
 func TestIsValidCustomPath(t *testing.T) {
-	valid := []string{"abc", "A1-b", "my_link", "path.name", "tilde~ok"}
+	// Added my/custom/path to valid
+	valid := []string{"abc", "A1-b", "my_link", "path.name", "tilde~ok", "my/custom/path"}
 	for _, v := range valid {
 		if !isValidCustomPath(v) {
 			t.Fatalf("expected custom path to be valid: %s", v)
 		}
 	}
 
-	invalid := []string{"", "bad/path", " space", "with space", "bad*char"}
+	// Removed bad/path from invalid
+	invalid := []string{"", " space", "with space", "bad*char"}
 	for _, v := range invalid {
 		if isValidCustomPath(v) {
 			t.Fatalf("expected custom path to be invalid: %s", v)
@@ -461,8 +510,8 @@ func TestIsValidStrictURL(t *testing.T) {
 }
 
 func BenchmarkGenerateRandomKey(b *testing.B) {
-	testDB := setupTestDB(&testing.T{})
-	defer teardownTestDB(testDB, &testing.T{})
+	testDB := setupTestDB(b)
+	defer teardownTestDB(testDB, b)
 
 	originalDB := db
 	db = testDB
@@ -475,8 +524,8 @@ func BenchmarkGenerateRandomKey(b *testing.B) {
 }
 
 func BenchmarkGetURL(b *testing.B) {
-	testDB := setupTestDB(&testing.T{})
-	defer teardownTestDB(testDB, &testing.T{})
+	testDB := setupTestDB(b)
+	defer teardownTestDB(testDB, b)
 
 	originalDB := db
 	db = testDB

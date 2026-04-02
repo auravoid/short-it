@@ -21,11 +21,21 @@ import (
 )
 
 var db *bbolt.DB
-var authToken string
 
-var rybbitSiteID = os.Getenv(envRybbitSiteID)
-var rybbitSiteKey = os.Getenv(envRybbitSiteKey)
-var rybbitSiteURL = os.Getenv(envRybbitSiteURL)
+type Config struct {
+	AppToken        string
+	DBPath          string
+	APIPort         string
+	APIBaseURL      string
+	WebUIEnabled    bool
+	WebUIPort       string
+	RybbitSiteID    string
+	RybbitSiteKey   string
+	RybbitSiteURL   string
+	AllowUnsafeURLs bool
+}
+
+var cfg Config
 var rybbitClient = &http.Client{Timeout: 3 * time.Second}
 
 const bucketName = "urls"
@@ -36,8 +46,8 @@ const envDBPath = "DB_PATH"
 const envPort = "API_PORT"
 const envAPIBaseURL = "API_URL"
 const envWebUI = "WEB_UI"
-const envWebUIPath = "WEB_UI_URL"
 const envWebUIPort = "WEB_UI_PORT"
+const envAllowUnsafeURLs = "ALLOW_UNSAFE_URLS"
 
 const envRybbitSiteID = "RYBBIT_SITE_ID"
 const envRybbitSiteKey = "RYBBIT_SITE_KEY"
@@ -50,45 +60,45 @@ const defaultDBPath = "short-it.db"
 const webUIPage = `<!doctype html>
 <html lang="en">
 <head>
-	<meta charset="utf-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1">
-	<title>short-it UI</title>
-	<style>
-		body { font-family: sans-serif; max-width: 680px; margin: 2rem auto; padding: 0 1rem; }
-		label { display: block; margin-top: 1rem; font-weight: 600; }
-		input { width: 100%; padding: .6rem; margin-top: .35rem; box-sizing: border-box; }
-		button { margin-top: 1rem; padding: .65rem 1rem; cursor: pointer; }
-		pre { margin-top: 1rem; padding: .7rem; background: #f5f5f5; overflow-x: auto; }
-	</style>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>short-it UI</title>
+    <style>
+        body { font-family: sans-serif; max-width: 680px; margin: 2rem auto; padding: 0 1rem; }
+        label { display: block; margin-top: 1rem; font-weight: 600; }
+        input { width: 100%; padding: .6rem; margin-top: .35rem; box-sizing: border-box; }
+        button { margin-top: 1rem; padding: .65rem 1rem; cursor: pointer; }
+        pre { margin-top: 1rem; padding: .7rem; background: #f5f5f5; overflow-x: auto; }
+    </style>
 </head>
 <body>
-	<h1>Create short link</h1>
-	<form id="create-form">
-		<label>Token <input id="token" type="password" required></label>
-		<label>URL <input id="url" type="url" placeholder="https://example.com" required></label>
-		<label>Custom path (optional) <input id="custom_path" type="text" placeholder="my-link"></label>
-		<button type="submit">Create</button>
-	</form>
-	<pre id="result"></pre>
-	<script>
-		const form = document.getElementById('create-form');
-		const result = document.getElementById('result');
-		form.addEventListener('submit', async (event) => {
-			event.preventDefault();
-			const payload = {
-				token: document.getElementById('token').value,
-				url: document.getElementById('url').value,
-				custom_path: document.getElementById('custom_path').value
-			};
-			const response = await fetch('/api/create', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(payload)
-			});
-			const data = await response.json().catch(() => ({ error: 'unexpected response' }));
-			result.textContent = JSON.stringify(data, null, 2);
-		});
-	</script>
+    <h1>Create short link</h1>
+    <form id="create-form">
+        <label>Token <input id="token" type="password" required></label>
+        <label>URL <input id="url" type="text" placeholder="https://example.com or /relative-path" required></label>
+        <label>Custom path (optional) <input id="custom_path" type="text" placeholder="my-link"></label>
+        <button type="submit">Create</button>
+    </form>
+    <pre id="result"></pre>
+    <script>
+        const form = document.getElementById('create-form');
+        const result = document.getElementById('result');
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const payload = {
+                token: document.getElementById('token').value,
+                url: document.getElementById('url').value,
+                custom_path: document.getElementById('custom_path').value
+            };
+            const response = await fetch('/api/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json().catch(() => ({ error: 'unexpected response' }));
+            result.textContent = JSON.stringify(data, null, 2);
+        });
+    </script>
 </body>
 </html>`
 
@@ -124,28 +134,49 @@ func normalizeBaseURL(raw string) string {
 	return strings.TrimRight(strings.TrimSpace(raw), "/")
 }
 
+func initConfig() {
+	cfg.AppToken = os.Getenv(envAppToken)
+	cfg.DBPath = envOrDefault(envDBPath, defaultDBPath)
+	cfg.APIPort = envOrDefault(envPort, defaultAPIPort)
+	cfg.APIBaseURL = normalizeBaseURL(os.Getenv(envAPIBaseURL))
+	cfg.WebUIEnabled = parseBoolEnv(os.Getenv(envWebUI))
+	cfg.WebUIPort = envOrDefault(envWebUIPort, defaultWebUIPort)
+	cfg.RybbitSiteID = os.Getenv(envRybbitSiteID)
+	cfg.RybbitSiteKey = os.Getenv(envRybbitSiteKey)
+	cfg.RybbitSiteURL = os.Getenv(envRybbitSiteURL)
+	cfg.AllowUnsafeURLs = parseBoolEnv(os.Getenv(envAllowUnsafeURLs))
+}
+
 func resolveAPIBaseURL(r *http.Request) string {
-	if base := normalizeBaseURL(os.Getenv(envAPIBaseURL)); base != "" {
-		return base
+	// 1. Explicitly configured URL takes highest priority
+	if cfg.APIBaseURL != "" {
+		return cfg.APIBaseURL
+	}
+
+	// 2. Intelligently infer from the current request
+	scheme := "http"
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+		scheme = "https"
 	}
 
 	host := r.Host
-	if h, _, err := net.SplitHostPort(r.Host); err == nil {
-		host = h
-	}
-	if host == "" {
-		host = "localhost"
+	if fwdHost := r.Header.Get("X-Forwarded-Host"); fwdHost != "" {
+		host = fwdHost
 	}
 
-	return fmt.Sprintf("http://%s:%s", host, envOrDefault(envPort, defaultAPIPort))
-}
-
-func resolveWebUIBaseURL(webUIPort string) string {
-	if base := normalizeBaseURL(os.Getenv(envWebUIPath)); base != "" {
-		return base
+	// Strip the port the request came in on (e.g., Web UI port)
+	hostname, _, err := net.SplitHostPort(host)
+	if err != nil {
+		hostname = host
 	}
 
-	return fmt.Sprintf("http://localhost:%s", webUIPort)
+	// If the API runs on standard HTTP/HTTPS ports, omit the port
+	if (scheme == "http" && cfg.APIPort == "80") || (scheme == "https" && cfg.APIPort == "443") {
+		return fmt.Sprintf("%s://%s", scheme, hostname)
+	}
+
+	// Reconstruct the URL pointing to the API port
+	return fmt.Sprintf("%s://%s:%s", scheme, hostname, cfg.APIPort)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -177,15 +208,16 @@ func readURLFromHeaderOrBody(r *http.Request) (string, error) {
 func generateRandomKey() string {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	for {
-		bytes := make([]byte, 6)
-		if _, err := rand.Read(bytes); err != nil {
+		// Renamed variable to avoid shadowing the "bytes" package
+		buf := make([]byte, 6)
+		if _, err := rand.Read(buf); err != nil {
 			log.Printf("[keys] crypto/rand failed, retrying: %v", err)
 			continue
 		}
-		for i, b := range bytes {
-			bytes[i] = charset[b%byte(len(charset))]
+		for i, b := range buf {
+			buf[i] = charset[b%byte(len(charset))]
 		}
-		key := string(bytes)
+		key := string(buf)
 
 		// Check if key already exists
 		if _, err := getURL(key); err != nil {
@@ -198,8 +230,8 @@ func generateRandomKey() string {
 func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
-		if auth != authToken {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		if auth != cfg.AppToken {
+			writeJSONError(w, http.StatusUnauthorized, "Unauthorized: Invalid or missing Authorization header token.")
 			return
 		}
 		next(w, r)
@@ -234,7 +266,7 @@ func putURL(key, url string) error {
 }
 
 var domainRegex = regexp.MustCompile(`^[a-zA-Z0-9\.-]+$`)
-var customPathRegex = regexp.MustCompile(`^[a-zA-Z0-9._~-]{1,128}$`)
+var customPathRegex = regexp.MustCompile(`^[a-zA-Z0-9._~/-]{1,128}$`)
 
 func isValidStrictURL(s string) bool {
 	// Avoid large strings
@@ -297,7 +329,8 @@ func deleteURL(key string) error {
 }
 
 func listURLs(cursor string, limit int) ([]KVPair, string, error) {
-	var items []KVPair
+	// Initialize slice so JSON responds with `[]` instead of `null` when empty
+	items := make([]KVPair, 0)
 	var nextCursor string
 
 	err := db.View(func(tx *bbolt.Tx) error {
@@ -310,14 +343,16 @@ func listURLs(cursor string, limit int) ([]KVPair, string, error) {
 		var k, v []byte
 
 		if cursor != "" {
-			c.Seek([]byte(cursor))
-			k, v = c.Next()
+			k, v = c.Seek([]byte(cursor))
 		} else {
 			k, v = c.First()
 		}
 
 		count := 0
-		for ; k != nil && count < limit; k, v = c.Next() {
+		for ; k != nil; k, v = c.Next() {
+			if limit > 0 && count >= limit {
+				break
+			}
 			items = append(items, KVPair{Key: string(k), Value: string(v)})
 			count++
 		}
@@ -337,24 +372,24 @@ func listURLs(cursor string, limit int) ([]KVPair, string, error) {
 func handleCreateShortURL(w http.ResponseWriter, r *http.Request) {
 	targetURL, err := readURLFromHeaderOrBody(r)
 	if err != nil {
-		http.Error(w, "Invalid JSON or missing URL", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("Bad Request: Failed to parse JSON body (%v).", err))
 		return
 	}
 
 	if targetURL == "" {
-		http.Error(w, "URL required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "Bad Request: The 'url' field is required in the JSON body or 'URL' header.")
 		return
 	}
 
-	if !isValidStrictURL(targetURL) {
-		http.Error(w, "Invalid URL", http.StatusBadRequest)
+	if !cfg.AllowUnsafeURLs && !isValidStrictURL(targetURL) {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("Bad Request: The provided URL '%s' is invalid, uses an unsupported scheme, or contains disallowed characters.", targetURL))
 		return
 	}
 
 	key := generateRandomKey()
 
 	if err := putURL(key, targetURL); err != nil {
-		http.Error(w, "Failed to store URL", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("Internal Server Error: Failed to store the URL in the database (%v).", err))
 		return
 	}
 
@@ -365,15 +400,20 @@ func handleListURLs(w http.ResponseWriter, r *http.Request) {
 	cursor := r.Header.Get("Cursor")
 	limitStr := r.Header.Get("Limit")
 	limit := maxPageSize
+	
 	if limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= maxPageSize {
-			limit = l
+		if l, err := strconv.Atoi(limitStr); err == nil {
+			if l == 0 {
+				limit = 0 // 0 means return all
+			} else if l > 0 && l <= maxPageSize {
+				limit = l
+			}
 		}
 	}
 
 	items, nextCursor, err := listURLs(cursor, limit)
 	if err != nil {
-		http.Error(w, "Failed to list URLs", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("Internal Server Error: Failed to retrieve URLs from the database (%v).", err))
 		return
 	}
 
@@ -389,19 +429,19 @@ func handleListURLs(w http.ResponseWriter, r *http.Request) {
 
 func handleGetURL(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "Method not allowed: This endpoint only supports GET requests to redirect to short links.", http.StatusMethodNotAllowed)
 		return
 	}
 
 	path := strings.TrimPrefix(r.URL.Path, "/")
 	if path == "" {
-		http.Error(w, "Key required", http.StatusBadRequest)
+		http.Error(w, "Bad Request: A short link key is required in the URL path.", http.StatusBadRequest)
 		return
 	}
 
 	url, err := getURL(path)
 	if err != nil {
-		http.Error(w, "URL not found", http.StatusNotFound)
+		http.Error(w, fmt.Sprintf("Not Found: The short link key '%s' does not exist.", path), http.StatusNotFound)
 		return
 	}
 
@@ -410,24 +450,29 @@ func handleGetURL(w http.ResponseWriter, r *http.Request) {
 }
 
 func handlePutCustomURL(w http.ResponseWriter, r *http.Request, path string) {
+	if !isValidCustomPath(path) {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("Bad Request: Invalid custom path '%s'. Paths must be 1-128 characters long and contain only alphanumeric characters, dots, underscores, tildes, or hyphens.", path))
+		return
+	}
+
 	targetURL, err := readURLFromHeaderOrBody(r)
 	if err != nil {
-		http.Error(w, "Invalid JSON or missing URL", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("Bad Request: Failed to parse JSON body (%v).", err))
 		return
 	}
 
 	if targetURL == "" {
-		http.Error(w, "URL required", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "Bad Request: The 'url' field is required in the JSON body or 'URL' header.")
 		return
 	}
 
-	if !isValidStrictURL(targetURL) {
-		http.Error(w, "Invalid URL", http.StatusBadRequest)
+	if !cfg.AllowUnsafeURLs && !isValidStrictURL(targetURL) {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("Bad Request: The provided URL '%s' is invalid, uses an unsupported scheme, or contains disallowed characters.", targetURL))
 		return
 	}
 
 	if err := putURL(path, targetURL); err != nil {
-		http.Error(w, "Failed to store URL", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("Internal Server Error: Failed to store the custom URL in the database (%v).", err))
 		return
 	}
 
@@ -436,7 +481,7 @@ func handlePutCustomURL(w http.ResponseWriter, r *http.Request, path string) {
 
 func handleDeleteURL(w http.ResponseWriter, r *http.Request, path string) {
 	if err := deleteURL(path); err != nil {
-		http.Error(w, "Failed to delete URL", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("Internal Server Error: Failed to delete URL '%s' from the database (%v).", path, err))
 		return
 	}
 
@@ -444,13 +489,17 @@ func handleDeleteURL(w http.ResponseWriter, r *http.Request, path string) {
 }
 
 func handlePageView(r *http.Request) {
-	if rybbitSiteID == "" || rybbitSiteKey == "" || rybbitSiteURL == "" {
+	if cfg.RybbitSiteID == "" || cfg.RybbitSiteKey == "" || cfg.RybbitSiteURL == "" {
 		return
 	}
 
 	ip := r.Header.Get("X-Forwarded-For")
 	if ip == "" {
-		ip = strings.Split(r.RemoteAddr, ":")[0]
+		if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+			ip = h
+		} else {
+			ip = r.RemoteAddr
+		}
 	} else {
 		ip = strings.TrimSpace(strings.Split(ip, ",")[0])
 	}
@@ -463,7 +512,7 @@ func handlePageView(r *http.Request) {
 	}
 
 	data := map[string]string{
-		"site_id":    rybbitSiteID,
+		"site_id":    cfg.RybbitSiteID,
 		"type":       "pageview",
 		"pathname":   r.URL.Path,
 		"hostname":   hostname,
@@ -483,13 +532,13 @@ func handlePageView(r *http.Request) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 
-		req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(rybbitSiteURL, "/")+"/api/track", bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(cfg.RybbitSiteURL, "/")+"/api/track", bytes.NewReader(body))
 		if err != nil {
 			log.Printf("[rybbit] failed to create request: %v", err)
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+rybbitSiteKey)
+		req.Header.Set("Authorization", "Bearer "+cfg.RybbitSiteKey)
 
 		resp, err := rybbitClient.Do(req)
 		if err != nil {
@@ -511,7 +560,7 @@ func isValidCustomPath(path string) bool {
 
 func handleWebUIPage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "Method not allowed: This endpoint only supports GET requests to load the Web UI.", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -521,13 +570,13 @@ func handleWebUIPage(w http.ResponseWriter, r *http.Request) {
 
 func handleWebUICreate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, http.StatusMethodNotAllowed, "Method not allowed: This endpoint only supports POST requests to create short links.")
 		return
 	}
 
 	var req WebUICreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "Invalid JSON body")
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("Bad Request: Invalid JSON body format (%v).", err))
 		return
 	}
 
@@ -535,13 +584,13 @@ func handleWebUICreate(w http.ResponseWriter, r *http.Request) {
 	req.URL = strings.TrimSpace(req.URL)
 	req.CustomPath = strings.Trim(strings.TrimSpace(req.CustomPath), "/")
 
-	if req.Token != authToken {
-		writeJSONError(w, http.StatusUnauthorized, "Unauthorized")
+	if req.Token != cfg.AppToken {
+		writeJSONError(w, http.StatusUnauthorized, "Unauthorized: The provided application token is invalid.")
 		return
 	}
 
-	if !isValidStrictURL(req.URL) {
-		writeJSONError(w, http.StatusBadRequest, "Invalid URL")
+	if !cfg.AllowUnsafeURLs && !isValidStrictURL(req.URL) {
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("Bad Request: The provided target URL '%s' is invalid, uses an unsupported scheme, or contains disallowed characters.", req.URL))
 		return
 	}
 
@@ -549,12 +598,18 @@ func handleWebUICreate(w http.ResponseWriter, r *http.Request) {
 	if key == "" {
 		key = generateRandomKey()
 	} else if !isValidCustomPath(key) {
-		writeJSONError(w, http.StatusBadRequest, "Invalid custom path")
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("Bad Request: Invalid custom path '%s'. Paths must be 1-128 characters long and contain only alphanumeric characters, dots, underscores, tildes, or hyphens.", key))
 		return
+	} else {
+		// Prevent accidental overwriting of existing keys
+		if _, err := getURL(key); err == nil {
+			writeJSONError(w, http.StatusConflict, fmt.Sprintf("Conflict: The custom path '%s' is already in use.", key))
+			return
+		}
 	}
 
 	if err := putURL(key, req.URL); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "Failed to store URL")
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("Internal Server Error: Failed to store the URL in the database (%v).", err))
 		return
 	}
 
@@ -567,16 +622,16 @@ func handleWebUICreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	authToken = os.Getenv(envAppToken)
-	if authToken == "" {
+	initConfig()
+
+	if cfg.AppToken == "" {
 		log.Fatalf("%s environment variable must be set", envAppToken)
 	}
 
 	var err error
-	dbPath := envOrDefault(envDBPath, defaultDBPath)
-	db, err = bbolt.Open(dbPath, 0600, nil)
+	db, err = bbolt.Open(cfg.DBPath, 0600, nil)
 	if err != nil {
-		log.Fatalf("[startup] failed opening db at %s: %v", dbPath, err)
+		log.Fatalf("[startup] failed opening db at %s: %v", cfg.DBPath, err)
 	}
 	defer db.Close()
 
@@ -591,33 +646,29 @@ func main() {
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc("/", handleRequest)
 
-	port := envOrDefault(envPort, defaultAPIPort)
-
-	if parseBoolEnv(os.Getenv(envWebUI)) {
-		webUIPort := envOrDefault(envWebUIPort, defaultWebUIPort)
-
-		if webUIPort == port {
-			log.Printf("[web-ui] enabled but %s (%s) matches %s (%s); skipping to avoid interfering with API", envWebUIPort, webUIPort, envPort, port)
+	if cfg.WebUIEnabled {
+		if cfg.WebUIPort == cfg.APIPort {
+			log.Printf("[web-ui] enabled but %s (%s) matches %s (%s); skipping to avoid interfering with API", envWebUIPort, cfg.WebUIPort, envPort, cfg.APIPort)
 		} else {
 			webUIMux := http.NewServeMux()
 			webUIMux.HandleFunc("/", handleWebUIPage)
 			webUIMux.HandleFunc("/api/create", handleWebUICreate)
 
 			go func() {
-				log.Printf("[web-ui] listening on :%s (public %s)", webUIPort, resolveWebUIBaseURL(webUIPort))
-				if err := http.ListenAndServe(":"+webUIPort, webUIMux); err != nil {
+				log.Printf("[web-ui] listening on :%s", cfg.WebUIPort)
+				if err := http.ListenAndServe(":"+cfg.WebUIPort, webUIMux); err != nil {
 					log.Printf("[web-ui] server stopped: %v", err)
 				}
 			}()
 		}
 	}
 
-	apiBase := normalizeBaseURL(os.Getenv(envAPIBaseURL))
+	apiBase := cfg.APIBaseURL
 	if apiBase == "" {
-		apiBase = fmt.Sprintf("http://localhost:%s", port)
+		apiBase = fmt.Sprintf("http://localhost:%s", cfg.APIPort)
 	}
-	log.Printf("[api] listening on :%s (public %s)", port, apiBase)
-	log.Fatal(http.ListenAndServe(":"+port, apiMux))
+	log.Printf("[api] listening on :%s (public %s)", cfg.APIPort, apiBase)
+	log.Fatal(http.ListenAndServe(":"+cfg.APIPort, apiMux))
 }
 
 func handleRequest(w http.ResponseWriter, r *http.Request) {
@@ -630,7 +681,7 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		case http.MethodGet:
 			authMiddleware(handleListURLs)(w, r)
 		default:
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			writeJSONError(w, http.StatusMethodNotAllowed, fmt.Sprintf("Method not allowed: Unsupported HTTP method '%s' on root endpoint. Use POST to create or GET to list.", r.Method))
 		}
 		return
 	}
@@ -647,6 +698,6 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 			handleDeleteURL(w, r, path)
 		})(w, r)
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, http.StatusMethodNotAllowed, fmt.Sprintf("Method not allowed: Unsupported HTTP method '%s' for custom path endpoint. Use GET, PUT, or DELETE.", r.Method))
 	}
 }
